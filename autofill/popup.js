@@ -30,10 +30,9 @@
   "selfIntro"
 ];
 
-const SETTINGS_IDS = ["fillMode", "apiKey", "baseUrl", "model"];
-const DEFAULT_SETTINGS = {
+const SYNC_SETTING_IDS = ["fillMode", "baseUrl", "model"];
+const DEFAULT_SYNC_SETTINGS = {
   fillMode: "local",
-  apiKey: "",
   baseUrl: "https://api.openai.com/v1",
   model: "gpt-4.1-mini"
 };
@@ -61,19 +60,45 @@ function applyProfileToUI(profile) {
   }
 }
 
-function collectSettingsFromUI() {
-  const settings = {};
-  for (const id of SETTINGS_IDS) {
-    settings[id] = (document.getElementById(id).value || "").trim();
-  }
-  return settings;
+function hasAnyProfileValue(profile) {
+  return Object.values(profile || {}).some((x) => String(x || "").trim().length > 0);
 }
 
-function applySettingsToUI(settings) {
-  const merged = { ...DEFAULT_SETTINGS, ...(settings || {}) };
-  for (const id of SETTINGS_IDS) {
-    document.getElementById(id).value = merged[id] || "";
+function collectSettingsFromUI() {
+  return {
+    fillMode: (document.getElementById("fillMode").value || "").trim(),
+    apiKey: (document.getElementById("apiKey").value || "").trim(),
+    baseUrl: (document.getElementById("baseUrl").value || "").trim(),
+    model: (document.getElementById("model").value || "").trim()
+  };
+}
+
+function splitSettings(uiSettings) {
+  const settings = uiSettings || {};
+  const syncSettings = {};
+  for (const id of SYNC_SETTING_IDS) {
+    syncSettings[id] = String(settings[id] || "").trim();
   }
+  const normalizedSync = { ...DEFAULT_SYNC_SETTINGS, ...syncSettings };
+  return {
+    syncSettings: normalizedSync,
+    localSecrets: {
+      apiKey: String(settings.apiKey || "").trim()
+    }
+  };
+}
+
+function applySettingsToUI(syncSettings, localSecrets) {
+  const merged = {
+    ...DEFAULT_SYNC_SETTINGS,
+    ...(syncSettings || {}),
+    apiKey: localSecrets?.apiKey || ""
+  };
+
+  document.getElementById("fillMode").value = merged.fillMode;
+  document.getElementById("apiKey").value = merged.apiKey;
+  document.getElementById("baseUrl").value = merged.baseUrl;
+  document.getElementById("model").value = merged.model;
   updateAiVisibility();
 }
 
@@ -85,15 +110,51 @@ function updateAiVisibility() {
 }
 
 async function loadAll() {
-  const data = await chrome.storage.sync.get(["profile", "settings"]);
-  applyProfileToUI(data.profile || {});
-  applySettingsToUI(data.settings || DEFAULT_SETTINGS);
+  const [syncData, localData] = await Promise.all([
+    chrome.storage.sync.get(["profile", "settings"]),
+    chrome.storage.local.get(["apiKey", "profile"])
+  ]);
+
+  const rawSyncSettings = syncData.settings || {};
+  const legacyApiKey = String(rawSyncSettings.apiKey || "").trim();
+  const localApiKey = String(localData.apiKey || "").trim();
+  const legacyProfile = (syncData.profile && typeof syncData.profile === "object") ? syncData.profile : {};
+  const localProfile = (localData.profile && typeof localData.profile === "object") ? localData.profile : {};
+
+  const syncSettings = { ...DEFAULT_SYNC_SETTINGS, ...rawSyncSettings };
+  delete syncSettings.apiKey;
+
+  const migrateTasks = [];
+  if (legacyApiKey && !localApiKey) {
+    migrateTasks.push(chrome.storage.local.set({ apiKey: legacyApiKey }));
+  }
+  if (!hasAnyProfileValue(localProfile) && hasAnyProfileValue(legacyProfile)) {
+    migrateTasks.push(chrome.storage.local.set({ profile: legacyProfile }));
+  }
+  if (rawSyncSettings.apiKey !== undefined) {
+    migrateTasks.push(chrome.storage.sync.set({ settings: syncSettings }));
+  }
+  if (syncData.profile !== undefined) {
+    migrateTasks.push(chrome.storage.sync.remove("profile"));
+  }
+  if (migrateTasks.length) {
+    await Promise.all(migrateTasks);
+  }
+
+  applyProfileToUI(hasAnyProfileValue(localProfile) ? localProfile : legacyProfile);
+  applySettingsToUI(syncSettings, { apiKey: localApiKey || legacyApiKey });
 }
 
 async function saveAll() {
   const profile = collectProfileFromUI();
-  const settings = { ...DEFAULT_SETTINGS, ...collectSettingsFromUI() };
-  await chrome.storage.sync.set({ profile, settings });
+  const uiSettings = collectSettingsFromUI();
+  const { syncSettings, localSecrets } = splitSettings(uiSettings);
+
+  await Promise.all([
+    chrome.storage.sync.set({ settings: syncSettings }),
+    chrome.storage.local.set({ ...localSecrets, profile })
+  ]);
+
   showStatus("已保存信息和设置");
 }
 
@@ -112,19 +173,42 @@ async function fillByLocalRules(tabId, profile) {
     showStatus("当前页面不支持自动填充", true);
     return;
   }
+  if (result.ok === false) {
+    showStatus(result.error || "本地模式填充失败", true);
+    return;
+  }
 
-  showStatus(`本地模式完成，已填写 ${result.filledCount} 项`);
+  showStatus(`本地模式完成，已填写 ${result.filledCount || 0} 项`);
 }
 
 function extractJsonObject(text) {
   if (!text) return null;
-  const match = text.match(/\{[\s\S]*\}/);
+  try {
+    const direct = JSON.parse(text);
+    if (direct && typeof direct === "object") return direct;
+  } catch {
+    // Keep fallback parser for tolerant extraction.
+  }
+
+  const match = String(text).match(/\{[\s\S]*\}/);
   if (!match) return null;
   try {
     return JSON.parse(match[0]);
   } catch {
     return null;
   }
+}
+
+function normalizeMessageContent(content) {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .map((part) => {
+      if (typeof part === "string") return part;
+      if (typeof part?.text === "string") return part.text;
+      return "";
+    })
+    .join("\n");
 }
 
 function truncateText(text, maxLen = 160) {
@@ -189,6 +273,11 @@ function formatNetworkError(err, context) {
   return `${context}失败：${truncateText(raw) || "未知错误"}`;
 }
 
+function isResponseFormatUnsupported(status, errorText) {
+  if (status !== 400) return false;
+  return /response_format|json_schema|schema|unsupported|not\s+supported/i.test(String(errorText || ""));
+}
+
 async function fetchWithTimeout(url, options, context) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
@@ -201,15 +290,54 @@ async function fetchWithTimeout(url, options, context) {
   }
 }
 
+function buildMappingsSchemaBody(model, messages, withSchema) {
+  const body = {
+    model,
+    temperature: 0,
+    messages
+  };
+
+  if (withSchema) {
+    body.response_format = {
+      type: "json_schema",
+      json_schema: {
+        name: "field_mappings",
+        strict: true,
+        schema: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            mappings: {
+              type: "array",
+              items: {
+                type: "object",
+                additionalProperties: false,
+                properties: {
+                  fieldKey: { type: "string" },
+                  value: { type: "string" }
+                },
+                required: ["fieldKey", "value"]
+              }
+            }
+          },
+          required: ["mappings"]
+        }
+      }
+    };
+  }
+
+  return body;
+}
+
 async function verifyApiConnection() {
-  const settings = { ...DEFAULT_SETTINGS, ...collectSettingsFromUI() };
+  const settings = { ...DEFAULT_SYNC_SETTINGS, ...collectSettingsFromUI() };
   if (!settings.apiKey) {
     showStatus("请先填写 AI API Key", true);
     return;
   }
 
-  const baseUrl = (settings.baseUrl || DEFAULT_SETTINGS.baseUrl).replace(/\/+$/, "");
-  const model = settings.model || DEFAULT_SETTINGS.model;
+  const baseUrl = (settings.baseUrl || DEFAULT_SYNC_SETTINGS.baseUrl).replace(/\/+$/, "");
+  const model = settings.model || DEFAULT_SYNC_SETTINGS.model;
   const authHeaders = { Authorization: `Bearer ${settings.apiKey}` };
 
   showStatus("正在验证 AI API...");
@@ -281,31 +409,50 @@ async function mapFieldsByAI(profile, fields, settings) {
     `候选字段: ${JSON.stringify(compactFields)}`
   ].join("\n");
 
-  const baseUrl = (settings.baseUrl || DEFAULT_SETTINGS.baseUrl).replace(/\/+$/, "");
-  const response = await fetchWithTimeout(`${baseUrl}/chat/completions`, {
+  const model = settings.model || DEFAULT_SYNC_SETTINGS.model;
+  const baseUrl = (settings.baseUrl || DEFAULT_SYNC_SETTINGS.baseUrl).replace(/\/+$/, "");
+  const headers = {
+    "Content-Type": "application/json",
+    Authorization: `Bearer ${settings.apiKey}`
+  };
+
+  const messages = [
+    { role: "system", content: "你是严谨的 JSON 生成器。" },
+    { role: "user", content: prompt }
+  ];
+
+  let response = await fetchWithTimeout(`${baseUrl}/chat/completions`, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${settings.apiKey}`
-    },
-    body: JSON.stringify({
-      model: settings.model || DEFAULT_SETTINGS.model,
-      temperature: 0,
-      messages: [
-        { role: "system", content: "你是严谨的 JSON 生成器。" },
-        { role: "user", content: prompt }
-      ]
-    })
+    headers,
+    body: JSON.stringify(buildMappingsSchemaBody(model, messages, true))
   }, "AI 分析");
 
   if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(formatHttpError(response.status, errorText, "AI 分析", settings.model || DEFAULT_SETTINGS.model));
+    const firstErrorText = await response.text();
+    if (isResponseFormatUnsupported(response.status, firstErrorText)) {
+      response = await fetchWithTimeout(`${baseUrl}/chat/completions`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(buildMappingsSchemaBody(model, messages, false))
+      }, "AI 分析");
+
+      if (!response.ok) {
+        const secondErrorText = await response.text();
+        throw new Error(formatHttpError(response.status, secondErrorText, "AI 分析", model));
+      }
+    } else {
+      throw new Error(formatHttpError(response.status, firstErrorText, "AI 分析", model));
+    }
   }
 
   const data = await response.json();
-  const content = data?.choices?.[0]?.message?.content || "";
-  const parsed = extractJsonObject(content);
+  const message = data?.choices?.[0]?.message || {};
+  let parsed = message?.parsed || null;
+
+  if (!parsed) {
+    const content = normalizeMessageContent(message?.content);
+    parsed = extractJsonObject(content);
+  }
 
   if (!parsed || !Array.isArray(parsed.mappings)) {
     throw new Error("AI 返回格式不正确");
@@ -324,8 +471,8 @@ async function fillByAI(tabId, profile, settings) {
   }
 
   const extracted = await chrome.tabs.sendMessage(tabId, { type: "EXTRACT_FORM_FIELDS" }).catch(() => null);
-  if (!extracted || !Array.isArray(extracted.fields) || extracted.fields.length === 0) {
-    showStatus("未识别到可填写字段", true);
+  if (!extracted || extracted.ok === false || !Array.isArray(extracted.fields) || extracted.fields.length === 0) {
+    showStatus(extracted?.error || "未识别到可填写字段", true);
     return;
   }
 
@@ -341,18 +488,23 @@ async function fillByAI(tabId, profile, settings) {
     payload: { mappings }
   }).catch(() => null);
 
-  if (!result) {
-    showStatus("AI 回填失败", true);
+  if (!result || result.ok === false) {
+    showStatus(result?.error || "AI 回填失败", true);
     return;
   }
 
-  showStatus(`AI 模式完成，建议 ${mappings.length} 项，已填 ${result.filledCount} 项`);
+  showStatus(`AI 模式完成，建议 ${mappings.length} 项，已填 ${result.filledCount || 0} 项`);
 }
 
 async function fillCurrentTab() {
-  const { profile, settings } = await chrome.storage.sync.get(["profile", "settings"]);
-  if (!profile) {
-    showStatus("请先填写并保存个人信息", true);
+  const [syncData, localData] = await Promise.all([
+    chrome.storage.sync.get(["settings"]),
+    chrome.storage.local.get(["apiKey", "profile"])
+  ]);
+
+  const profile = (localData.profile && typeof localData.profile === "object") ? localData.profile : {};
+  if (!hasAnyProfileValue(profile)) {
+    showStatus("请先填写并保存至少一项个人信息", true);
     return;
   }
 
@@ -362,7 +514,12 @@ async function fillCurrentTab() {
     return;
   }
 
-  const mergedSettings = { ...DEFAULT_SETTINGS, ...(settings || {}) };
+  const mergedSettings = {
+    ...DEFAULT_SYNC_SETTINGS,
+    ...(syncData.settings || {}),
+    apiKey: String(localData.apiKey || "").trim()
+  };
+
   if (mergedSettings.fillMode === "ai") {
     await fillByAI(tabId, profile, mergedSettings);
   } else {
@@ -390,8 +547,8 @@ async function importProfile(file) {
     const text = await file.text();
     const profile = JSON.parse(text);
     applyProfileToUI(profile);
-    const { settings } = await chrome.storage.sync.get("settings");
-    await chrome.storage.sync.set({ profile, settings: settings || DEFAULT_SETTINGS });
+    await chrome.storage.local.set({ profile });
+
     showStatus("导入成功，已自动保存");
   } catch {
     showStatus("导入失败，请检查 JSON 文件", true);
@@ -404,14 +561,13 @@ async function clearSavedProfile() {
     emptyProfile[id] = "";
   }
   applyProfileToUI(emptyProfile);
+  await chrome.storage.local.set({ profile: emptyProfile });
 
-  const { settings } = await chrome.storage.sync.get("settings");
-  await chrome.storage.sync.set({ profile: emptyProfile, settings: settings || DEFAULT_SETTINGS });
   showStatus("已清空已保存信息");
 }
 
 document.getElementById("saveBtn").addEventListener("click", () => {
-  saveAll().catch(() => showStatus("保存失败", true));
+  saveAll().catch((err) => showStatus(err?.message || "保存失败", true));
 });
 
 document.getElementById("fillBtn").addEventListener("click", () => {
