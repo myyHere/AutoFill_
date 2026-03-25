@@ -398,6 +398,18 @@ async function importProfile(file) {
   }
 }
 
+async function clearSavedProfile() {
+  const emptyProfile = {};
+  for (const id of FIELD_IDS) {
+    emptyProfile[id] = "";
+  }
+  applyProfileToUI(emptyProfile);
+
+  const { settings } = await chrome.storage.sync.get("settings");
+  await chrome.storage.sync.set({ profile: emptyProfile, settings: settings || DEFAULT_SETTINGS });
+  showStatus("已清空已保存信息");
+}
+
 document.getElementById("saveBtn").addEventListener("click", () => {
   saveAll().catch(() => showStatus("保存失败", true));
 });
@@ -411,6 +423,10 @@ document.getElementById("exportBtn").addEventListener("click", exportProfile);
 document.getElementById("importInput").addEventListener("change", (event) => {
   const file = event.target.files?.[0];
   importProfile(file);
+});
+
+document.getElementById("clearProfileBtn").addEventListener("click", () => {
+  clearSavedProfile().catch((err) => showStatus(err?.message || "清空失败", true));
 });
 
 document.getElementById("verifyApiBtn").addEventListener("click", () => {

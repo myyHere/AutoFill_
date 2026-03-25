@@ -18,37 +18,37 @@
           <option value="ai">AI 模式（更智能）</option>
         </select>
       </label>
-      <label class="full ai-only">AI API Key<input id="apiKey" type="password" placeholder="sk-..." /></label>
-      <label class="full ai-only">AI Base URL<input id="baseUrl" placeholder="https://api.openai.com/v1" /></label>
-      <label class="full ai-only">AI 模型<input id="model" placeholder="gpt-4.1-mini" /></label>
+      <label class="full ai-only">AI API Key<input id="apiKey" type="password" /></label>
+      <label class="full ai-only">AI Base URL<input id="baseUrl" /></label>
+      <label class="full ai-only">AI 模型<input id="model" /></label>
 
       <label>姓名<input id="name" /></label>
       <label>手机<input id="phone" /></label>
       <label>邮箱<input id="email" /></label>
       <label>GitHub<input id="github" /></label>
       <label>学校<input id="school" /></label>
-      <label>在校时间<input id="schoolPeriod" placeholder="2023.9 - 2027.6" /></label>
+      <label>在校时间<input id="schoolPeriod" /></label>
       <label>学院<input id="college" /></label>
       <label>专业<input id="major" /></label>
       <label>学校城市<input id="schoolCity" /></label>
       <label>家庭城市<input id="familyCity" /></label>
-      <label>GPA<input id="gpa" placeholder="3/4" /></label>
-      <label>专业排名<input id="majorRank" placeholder="30%" /></label>
+      <label>GPA<input id="gpa" /></label>
+      <label>专业排名<input id="majorRank" /></label>
       <label>实验室<input id="lab" /></label>
-      <label class="full">奖学金/荣誉<textarea id="scholarships" rows="2" placeholder="综合奖学金；竞赛一等奖学金"></textarea></label>
+      <label class="full">奖学金/荣誉<textarea id="scholarships" rows="2"></textarea></label>
       <label>项目名称<input id="projectName" /></label>
-      <label>项目时间<input id="projectTime" placeholder="2025.03 - 2025.06" /></label>
+      <label>项目时间<input id="projectTime" /></label>
       <label class="full">项目内容<textarea id="projectContent" rows="3"></textarea></label>
       <label>竞赛获奖<input id="competitionAward" /></label>
-      <label>获奖时间<input id="competitionTime" placeholder="2025.11" /></label>
+      <label>获奖时间<input id="competitionTime" /></label>
       <label class="full">获奖内容<textarea id="competitionContent" rows="3"></textarea></label>
       <label>微信<input id="wechat" /></label>
       <label>所在城市<input id="city" /></label>
-      <label>最高学历<input id="degree" placeholder="本科/硕士/博士" /></label>
-      <label>工作年限<input id="workYears" placeholder="3年" /></label>
+      <label>最高学历<input id="degree" /></label>
+      <label>工作年限<input id="workYears" /></label>
       <label>当前公司<input id="currentCompany" /></label>
       <label>当前职位<input id="currentTitle" /></label>
-      <label>期望薪资<input id="expectedSalary" placeholder="25k*14" /></label>
+      <label>期望薪资<input id="expectedSalary" /></label>
       <label>作品链接<input id="portfolio" /></label>
       <label class="full">个人简介<textarea id="selfIntro" rows="3"></textarea></label>
     </div>
@@ -66,10 +66,12 @@
       </label>
     </div>
     <div class="actions small">
+      <button id="clearProfileBtn">清空已保存信息</button>
       <button id="verifyApiBtn">验证 AI API</button>
+    </div>
+    <div class="actions small">
       <button id="saveAndVerifyBtn">保存并验证</button>
     </div>
-
     <p id="status" class="status"></p>
   </main>
   <script src="popup.js"></script>
